@@ -1,20 +1,45 @@
 -- MetalLedger v0 — Full Database Schema
 -- PostgreSQL 15+
+-- Updated: Scrap metal pivot — dealer/location model, ferrous+non-ferrous catalog
+
+-- ============================================================
+-- DEALERS
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS dealers (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         TEXT        NOT NULL,
+    location_zip TEXT,
+    city         TEXT,
+    state        TEXT,
+    phone        TEXT,
+    website      TEXT,
+    active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dealers_zip ON dealers (location_zip);
 
 -- ============================================================
 -- PRICING
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS prices_raw (
-    id          SERIAL PRIMARY KEY,
-    source      TEXT        NOT NULL,           -- e.g. 'metals_api', 'lbma'
-    metal       TEXT        NOT NULL,           -- e.g. 'XAU', 'XAG', 'CU'
-    venue       TEXT        NOT NULL DEFAULT '', -- e.g. 'SPOT', 'LBMA_AM'
-    price_ts    TIMESTAMPTZ NOT NULL,           -- timestamp of the price observation
-    value       NUMERIC(18,6) NOT NULL,
-    currency    TEXT        NOT NULL DEFAULT 'USD',
-    source_id   TEXT,                           -- upstream provider's own ID
-    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id            SERIAL PRIMARY KEY,
+    source        TEXT        NOT NULL,           -- e.g. 'dealer_manual', 'iscrap', 'scrap_register'
+    metal         TEXT        NOT NULL,           -- e.g. 'CU_BARE', 'HMS1', 'SHRED'
+    venue         TEXT        NOT NULL DEFAULT '', -- e.g. 'DEALER:dealer_001:77001', 'REGIONAL_SOUTH'
+    price_ts      TIMESTAMPTZ NOT NULL,           -- timestamp of the price observation
+    value         NUMERIC(18,6) NOT NULL,          -- price per lb (normalized)
+    currency      TEXT        NOT NULL DEFAULT 'USD',
+    source_id     TEXT,                           -- upstream provider's own ID
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Dealer/location fields (populated for dealer_manual source)
+    dealer_id     UUID        REFERENCES dealers(id),
+    location_zip  TEXT,
+    price_per_lb  NUMERIC(10,4),                 -- price per pound
+    price_per_ton NUMERIC(10,2),                 -- price per short ton (2000 lb)
+    unit          TEXT        NOT NULL DEFAULT 'lb'  -- 'lb' or 'ton'
 );
 
 CREATE INDEX IF NOT EXISTS idx_prices_raw_metal_ts ON prices_raw (metal, price_ts DESC);
@@ -216,29 +241,54 @@ CREATE TRIGGER trg_audit_no_delete
     FOR EACH ROW EXECUTE FUNCTION deny_audit_mutation();
 
 -- ============================================================
--- SEED: Chart of Accounts
+-- SEED: Chart of Accounts (Scrap Metal)
 -- ============================================================
 
 INSERT INTO accounts (code, name, type) VALUES
-    ('1000', 'Cash and Cash Equivalents',   'ASSET'),
-    ('1100', 'Gold Inventory (XAU)',         'ASSET'),
-    ('1101', 'Silver Inventory (XAG)',       'ASSET'),
-    ('1102', 'Copper Inventory (CU)',        'ASSET'),
-    ('1200', 'Accounts Receivable',          'ASSET'),
-    ('2000', 'Accounts Payable',             'LIABILITY'),
-    ('2100', 'Accrued Liabilities',          'LIABILITY'),
-    ('3000', 'Retained Earnings',            'EQUITY'),
-    ('3100', 'Common Stock',                 'EQUITY'),
-    ('4000', 'Revenue — Metal Sales',        'REVENUE'),
-    ('5000', 'Cost of Goods Sold',           'EXPENSE'),
-    ('5100', 'Operating Expenses',           'EXPENSE')
+    ('1000', 'Cash and Cash Equivalents',            'ASSET'),
+    -- Ferrous inventory
+    ('1110', 'HMS #1 Inventory',                     'ASSET'),
+    ('1111', 'HMS #2 Inventory',                     'ASSET'),
+    ('1112', 'Shredded Steel Inventory',             'ASSET'),
+    ('1113', 'Cast Iron Inventory',                  'ASSET'),
+    -- Non-ferrous inventory
+    ('1120', 'Bare Bright Copper Inventory',         'ASSET'),
+    ('1121', '#1 Copper Inventory',                  'ASSET'),
+    ('1122', '#2 Copper Inventory',                  'ASSET'),
+    ('1130', 'Cast Aluminum Inventory',              'ASSET'),
+    ('1131', 'Aluminum Extrusion Inventory',         'ASSET'),
+    ('1132', 'Yellow Brass Inventory',               'ASSET'),
+    ('1133', 'Stainless Steel 304 Inventory',        'ASSET'),
+    ('1134', 'Lead Inventory',                       'ASSET'),
+    ('1135', 'Zorba Inventory',                      'ASSET'),
+    -- Other
+    ('1200', 'Accounts Receivable',                  'ASSET'),
+    ('2000', 'Accounts Payable',                     'LIABILITY'),
+    ('2100', 'Accrued Liabilities',                  'LIABILITY'),
+    ('3000', 'Retained Earnings',                    'EQUITY'),
+    ('3100', 'Common Stock',                         'EQUITY'),
+    ('4000', 'Revenue — Scrap Metal Sales',          'REVENUE'),
+    ('5000', 'Cost of Goods Sold',                   'EXPENSE'),
+    ('5100', 'Operating Expenses',                   'EXPENSE')
 ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- SEED: Dealers
+-- ============================================================
+
+INSERT INTO dealers (id, name, location_zip, city, state, active) VALUES
+    ('00000000-0001-0000-0000-000000000001', 'Houston Metals Inc',    '77001', 'Houston', 'TX', TRUE),
+    ('00000000-0002-0000-0000-000000000002', 'Gulf Coast Scrap',      '77002', 'Houston', 'TX', TRUE),
+    ('00000000-0003-0000-0000-000000000003', 'Lone Star Recycling',   '77003', 'Houston', 'TX', TRUE)
+ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================
 -- SOURCE CONFIGS
 -- ============================================================
 
 INSERT INTO source_configs (config_key, config_val) VALUES
-    ('metals_api', '{"url": "https://metals-api.com/api/latest", "priority": 1, "enabled": true}'),
-    ('lbma',       '{"url": "https://api.lbma.org.uk/",          "priority": 2, "enabled": false}')
+    ('dealer_manual',    '{"priority": 1, "enabled": true,  "description": "Manual dealer price submissions via POST /prices/dealer"}'),
+    ('iscrap',           '{"url": "https://www.iscrapapp.com", "priority": 2, "enabled": false, "description": "iScrap App scraper stub — requires licensing or scraping consent"}'),
+    ('scrap_register',   '{"url": "https://www.scrapregister.com", "priority": 3, "enabled": false, "description": "ScrapRegister.com regional averages — requires licensing"}'),
+    ('recycling_today',  '{"url": "https://api.fastmarkets.com", "priority": 4, "enabled": false, "description": "Fastmarkets commodity benchmarks — requires paid subscription"}')
 ON CONFLICT (config_key) DO NOTHING;

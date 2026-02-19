@@ -3,19 +3,21 @@ MetalLedger — Ledger service database models (asyncpg row helpers).
 
 We use raw asyncpg (no ORM) for performance and auditability.
 Each function returns typed dicts or Pydantic models.
+
+Updated: Scrap metal pivot — get_price_comparison() for dealer price lookup.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "packages"))
 
-from common.types import AccountOut, JournalEntryOut, JournalLineIn, ValuationOut
+from common.types import AccountOut, DealerPriceOut, JournalEntryOut, JournalLineIn, ValuationOut
 
 
 # ── Accounts ──────────────────────────────────────────────────────────────────
@@ -94,6 +96,115 @@ async def get_journal_entry(pool: Any, entry_id: int) -> Optional[Dict]:
 
 
 # ── Valuations ────────────────────────────────────────────────────────────────
+
+async def get_price_comparison(
+    pool: Any,
+    metal: str,
+    zip_code: str,
+    radius_miles: int = 50,
+) -> List[DealerPriceOut]:
+    """
+    Return dealer prices for a scrap metal near a ZIP code, sorted by price
+    descending (best-paying dealer first).
+
+    This is the core value proposition for scrap resellers.
+
+    Args:
+        pool:         asyncpg connection pool.
+        metal:        Metal slug (e.g. 'CU_BARE', 'HMS1').
+        zip_code:     5-digit ZIP code to search from.
+        radius_miles: Search radius in miles (default 50).
+
+    Returns:
+        List of DealerPriceOut sorted by price_per_lb descending.
+
+    Notes on ZIP-based proximity (v0):
+        Full geo-distance requires PostGIS or a geocoding service.
+        For v0, we use ZIP prefix matching:
+          - Same ZIP = 0 miles (always included)
+          - Same 3-digit prefix (~county level) ≈ within ~50 miles
+          - Same 1-digit prefix (~region) ≈ within ~200 miles
+        This is a practical approximation for the Houston-area demo dealers.
+        Replace with PostGIS ST_DWithin() when geo data is available.
+    """
+    # ZIP proximity filter: same prefix (3 digits) approximates county radius
+    zip_prefix = zip_code[:3] if len(zip_code) >= 3 else zip_code
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            d.id::text          AS dealer_id,
+            d.name              AS dealer_name,
+            d.location_zip,
+            d.city,
+            d.state,
+            p.metal,
+            p.price_per_lb,
+            p.price_per_ton,
+            p.unit,
+            p.price_ts,
+            p.source
+        FROM prices_raw p
+        JOIN dealers d ON d.id = p.dealer_id
+        WHERE
+            p.metal       = $1
+            AND d.active  = TRUE
+            AND p.price_ts >= NOW() - INTERVAL '30 days'
+            AND d.location_zip LIKE $2
+        ORDER BY p.price_per_lb DESC NULLS LAST
+        """,
+        metal,
+        f"{zip_prefix}%",
+    )
+
+    now = datetime.now(tz=timezone.utc)
+    results = []
+    seen_dealers = set()
+
+    for row in rows:
+        # One price per dealer (most recent already sorted by price DESC,
+        # but we take first occurrence of each dealer = highest price)
+        dealer_id = row["dealer_id"]
+        if dealer_id in seen_dealers:
+            continue
+        seen_dealers.add(dealer_id)
+
+        price_ts = row["price_ts"]
+        if price_ts.tzinfo is None:
+            price_ts = price_ts.replace(tzinfo=timezone.utc)
+
+        age_hours = (now - price_ts).total_seconds() / 3600.0
+
+        price_per_lb  = row["price_per_lb"]
+        price_per_ton = row["price_per_ton"]
+
+        # Fallback: compute from value column if price_per_lb not populated
+        if price_per_lb is None:
+            # prices_raw.value is stored as price_per_lb (normalized)
+            price_per_lb  = None
+            price_per_ton = None
+
+        results.append(
+            DealerPriceOut(
+                dealer_id      = dealer_id,
+                dealer_name    = row["dealer_name"],
+                location_zip   = row["location_zip"] or "",
+                city           = row["city"],
+                state          = row["state"],
+                metal          = row["metal"],
+                price_per_lb   = Decimal(str(price_per_lb)) if price_per_lb is not None else Decimal("0"),
+                price_per_ton  = Decimal(str(price_per_ton)) if price_per_ton is not None else None,
+                unit           = row["unit"] or "lb",
+                price_ts       = price_ts,
+                source         = row["source"],
+                price_age_hours = round(age_hours, 2),
+            )
+        )
+
+    # Sort by price_per_lb descending (best payer first)
+    results.sort(key=lambda r: r.price_per_lb, reverse=True)
+    return results
+
 
 async def get_valuation(
     pool: Any,

@@ -13,7 +13,7 @@ import os
 import sys
 import uuid
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "packages"))
 
@@ -28,6 +28,7 @@ from models import (
     get_journal_entry,
     get_valuation,
     list_accounts,
+    get_price_comparison,
 )
 
 log    = get_logger(__name__)
@@ -169,3 +170,70 @@ async def get_accounts(
     )
 
     return accounts
+
+
+# ── GET /prices/compare ───────────────────────────────────────────────────────
+
+@router.get(
+    "/prices/compare",
+    summary="Compare dealer prices for a scrap metal by ZIP code",
+    tags=["prices"],
+)
+async def compare_prices(
+    metal:        str,
+    zip:          str,
+    radius_miles: int     = 50,
+    request:      Request = None,
+    pool=Depends(get_pool),
+):
+    """
+    Return list of dealers with their current prices for a scrap metal,
+    sorted by price descending (best payer first).
+
+    This is the core value proposition for scrap resellers: find the dealer
+    paying the most for your metal today.
+
+    Query params:
+    - **metal**: Metal slug (e.g. CU_BARE, HMS1, ZORBA)
+    - **zip**: 5-digit ZIP code to search from
+    - **radius_miles**: Search radius in miles (default 50)
+
+    Returns:
+        List of dealer price records sorted by price_per_lb descending.
+        Includes dealer name, location, price, and price age.
+
+    Notes:
+    - Uses most recent price per dealer (last 30 days).
+    - ZIP-based radius is approximate (same-prefix ZIP matching for v0;
+      full geo-distance requires PostGIS or a geocoding service).
+    - Dealers with no prices in the last 30 days are excluded.
+    """
+    request_id = new_request_id()
+
+    results = await get_price_comparison(
+        pool,
+        metal        = metal.upper().strip(),
+        zip_code     = zip.strip(),
+        radius_miles = radius_miles,
+    )
+
+    await write_audit_entry_async(
+        pool,
+        request_id = request_id,
+        actor      = "api",
+        action     = f"GET /prices/compare metal={metal} zip={zip} radius={radius_miles}",
+        payload    = {"result_count": len(results)},
+    )
+
+    if not results:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code = 404,
+            detail      = (
+                f"No dealer prices found for {metal.upper()} near ZIP {zip} "
+                f"within {radius_miles} miles. "
+                f"Dealers can submit prices via POST /prices/dealer."
+            ),
+        )
+
+    return results

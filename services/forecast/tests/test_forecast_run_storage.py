@@ -12,6 +12,8 @@ Verifies:
 3. Each row has model, metal, horizon, p50 fields populated.
 4. GET /forecast/latest returns stored data.
 5. Insufficient data returns graceful response (not a crash).
+
+Updated: Uses scrap metal slugs (CU_BARE, HMS1, ZORBA, etc.) instead of XAU/XAG/CU.
 """
 
 from __future__ import annotations
@@ -114,30 +116,33 @@ class _MockAcquire:
         pass
 
 
-# ── Seed prices ───────────────────────────────────────────────────────────────
+# ── Seed prices (scrap metals) ────────────────────────────────────────────────
 
-XAU_PRICES = [
-    2063.10, 2047.30, 2031.55, 2024.80, 2029.45,
-    2038.70, 2018.60, 2005.20, 2012.75, 2029.90,
-    2007.45, 1998.30, 2014.60, 2022.15, 2018.80,
-    2031.95, 2044.70, 2018.50, 2026.85, 2033.40,
-    2039.75, 2055.20, 2038.60, 2045.30, 2052.90,
-    2061.40, 2048.75, 2056.20, 2001.85, 1991.40,
+# CU_BARE — Bare Bright Copper (~$3.50-4.20/lb)
+CU_BARE_PRICES = [
+    3.85, 3.80, 3.88, 3.82, 3.90,
+    3.87, 3.84, 3.79, 3.83, 3.91,
+    3.86, 3.78, 3.85, 3.89, 3.84,
+    3.81, 3.92, 3.88, 3.85, 3.83,
+    3.87, 3.90, 3.84, 3.88, 3.91,
+    3.86, 3.83, 3.89, 3.85, 3.82,
 ]
 
-XAG_PRICES = [
-    23.45, 23.18, 22.89, 22.71, 22.94,
-    23.22, 23.05, 22.63, 22.80, 23.14,
-    22.47, 22.32, 22.55, 22.78, 23.01,
-    23.28, 23.67, 23.44, 23.55, 23.71,
-    23.89, 24.12, 23.98, 24.21, 24.45,
-    24.68, 24.33, 24.55, 23.87, 23.61,
+# HMS1 — Heavy Melting Steel #1 (~$0.090-0.110/lb)
+HMS1_PRICES = [
+    0.1005, 0.0995, 0.1010, 0.0988, 0.1015,
+    0.0998, 0.1002, 0.0990, 0.1008, 0.1020,
+    0.0985, 0.0993, 0.1005, 0.1012, 0.0997,
+    0.1000, 0.1018, 0.0995, 0.1003, 0.0988,
+    0.1010, 0.1022, 0.0992, 0.1005, 0.1015,
+    0.0998, 0.1008, 0.1000, 0.0995, 0.1005,
 ]
 
 
 # ── Inline forecast app (no real models) ─────────────────────────────────────
 
-METALS_TEST   = ["XAU", "XAG", "CU"]
+# Use scrap metal slugs for testing
+METALS_TEST   = ["CU_BARE", "HMS1", "ZORBA"]
 HORIZONS_TEST = [1, 5, 20]
 
 MODEL_REGISTRY_STUB = [
@@ -149,7 +154,7 @@ MODEL_REGISTRY_STUB = [
 
 def build_test_app(seed_prices: Dict[str, List[float]] = None):
     test_app = FastAPI()
-    db       = InMemoryDB(seed_prices or {"XAU": XAU_PRICES, "XAG": XAG_PRICES})
+    db       = InMemoryDB(seed_prices or {"CU_BARE": CU_BARE_PRICES, "HMS1": HMS1_PRICES})
 
     async def _load_prices(metal):
         rows   = await db.fetch("SELECT FROM prices_canonical WHERE metal=$1", metal)
@@ -258,36 +263,36 @@ class TestForecastRunStorage:
 
     def test_get_latest_forecast_after_run(self):
         self.client.post("/forecast/run")
-        resp = self.client.get("/forecast/latest?metal=XAU")
+        resp = self.client.get("/forecast/latest?metal=CU_BARE")
         assert resp.status_code == status.HTTP_200_OK
         data = resp.json()
         assert isinstance(data, list)
         assert len(data) > 0
 
     def test_get_latest_missing_metal_404(self):
-        # CU has no seed prices in this fixture
-        resp = self.client.get("/forecast/latest?metal=CU")
+        # ZORBA has no seed prices in this fixture
+        resp = self.client.get("/forecast/latest?metal=ZORBA")
         assert resp.status_code == status.HTTP_404_NOT_FOUND
 
     def test_forecast_run_with_insufficient_data(self):
         """Forecast run with < 5 rows does not crash — returns 202 with 0 forecasts."""
         app_short, db_short = build_test_app(
-            seed_prices={"XAU": [2000.0, 2010.0]}
+            seed_prices={"CU_BARE": [3.85, 3.80]}
         )
         client_short = TestClient(app_short)
         resp = client_short.post("/forecast/run")
         assert resp.status_code == status.HTTP_202_ACCEPTED
-        # XAU with 2 rows → 0 forecasts (< 5 minimum)
+        # CU_BARE with 2 rows → 0 forecasts (< 5 minimum)
         assert db_short.forecasts == [] or all(
-            r["metal"] != "XAU" for r in db_short.forecasts
+            r["metal"] != "CU_BARE" for r in db_short.forecasts
         )
 
-    def test_three_metals_covered(self):
-        """With seed data for XAU and XAG, both get forecast rows."""
+    def test_scrap_metals_covered(self):
+        """With seed data for CU_BARE and HMS1, both get forecast rows."""
         self.client.post("/forecast/run")
         metals = {row["metal"] for row in self.db.forecasts}
-        assert "XAU" in metals
-        assert "XAG" in metals
+        assert "CU_BARE" in metals
+        assert "HMS1"    in metals
 
     def test_horizons_per_model(self):
         """Each model produces forecasts for all 3 horizons."""

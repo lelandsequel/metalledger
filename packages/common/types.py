@@ -1,5 +1,6 @@
 """
 MetalLedger — Shared Pydantic models used across all services.
+Updated: Scrap metal pivot — DealerPriceOut, scrap Metal enum.
 """
 
 from __future__ import annotations
@@ -7,7 +8,7 @@ from __future__ import annotations
 import enum
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -16,9 +17,22 @@ from pydantic import BaseModel, Field, model_validator
 # ── Enums ────────────────────────────────────────────────────────────────────
 
 class Metal(str, enum.Enum):
-    XAU = "XAU"
-    XAG = "XAG"
-    CU  = "CU"
+    """Scrap metal slugs supported by MetalLedger."""
+    # Ferrous
+    HMS1  = "HMS1"
+    HMS2  = "HMS2"
+    SHRED = "SHRED"
+    CAST  = "CAST"
+    # Non-ferrous
+    CU_BARE      = "CU_BARE"
+    CU_1         = "CU_1"
+    CU_2         = "CU_2"
+    AL_CAST      = "AL_CAST"
+    AL_EXTRUSION = "AL_EXTRUSION"
+    BRASS        = "BRASS"
+    SS_304       = "SS_304"
+    LEAD         = "LEAD"
+    ZORBA        = "ZORBA"
 
 
 class AccountType(str, enum.Enum):
@@ -150,6 +164,29 @@ class BacktestOut(BaseModel):
     mape:         Optional[Decimal]
     rmse:         Optional[Decimal]
     run_at:       datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── Price Comparison (Scrap Reseller) ─────────────────────────────────────────
+
+class DealerPriceOut(BaseModel):
+    """
+    A dealer's current buy price for a scrap metal.
+    Used by GET /prices/compare to show best-paying dealers.
+    """
+    dealer_id:    str
+    dealer_name:  str
+    location_zip: str
+    city:         Optional[str] = None
+    state:        Optional[str] = None
+    metal:        str
+    price_per_lb: Decimal
+    price_per_ton: Optional[Decimal] = None
+    unit:         str = "lb"
+    price_ts:     datetime
+    source:       str
+    price_age_hours: Optional[float] = None   # how old this price is
 
     model_config = {"from_attributes": True}
 

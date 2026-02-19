@@ -24,7 +24,15 @@ from common.types import ForecastOut
 log    = get_logger(__name__)
 router = APIRouter()
 
-METALS   = ["XAU", "XAG", "CU"]
+# Scrap metal slugs — ferrous + non-ferrous
+METALS = [
+    # Ferrous
+    "HMS1", "HMS2", "SHRED", "CAST",
+    # Non-ferrous
+    "CU_BARE", "CU_1", "CU_2",
+    "AL_CAST", "AL_EXTRUSION",
+    "BRASS", "SS_304", "LEAD", "ZORBA",
+]
 HORIZONS = [1, 5, 20]
 
 
