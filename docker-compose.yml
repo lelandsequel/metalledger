@@ -1,0 +1,87 @@
+services:
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB:       metalledger
+      POSTGRES_USER:     metalledger
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - ./db/migrations:/docker-entrypoint-initdb.d
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metalledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pricing_ingestor:
+    build:
+      context: .
+      dockerfile: services/pricing_ingestor/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:             postgresql://metalledger:secret@db:5432/metalledger
+      METALS_API_KEY:           ${METALS_API_KEY:-}
+      INGEST_INTERVAL_SECONDS:  ${INGEST_INTERVAL_SECONDS:-300}
+      LOG_LEVEL:                ${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+
+  ledger:
+    build:
+      context: .
+      dockerfile: services/ledger/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://metalledger:secret@db:5432/metalledger
+      LOG_LEVEL:    ${LOG_LEVEL:-INFO}
+    ports:
+      - "8001:8000"
+    restart: unless-stopped
+
+  forecast:
+    build:
+      context: .
+      dockerfile: services/forecast/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://metalledger:secret@db:5432/metalledger
+      LOG_LEVEL:    ${LOG_LEVEL:-INFO}
+    ports:
+      - "8002:8000"
+    restart: unless-stopped
+
+  orchestrator_agent:
+    build:
+      context: .
+      dockerfile: services/orchestrator_agent/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      forecast:
+        condition: service_started
+      ledger:
+        condition: service_started
+    environment:
+      DATABASE_URL:       postgresql://metalledger:secret@db:5432/metalledger
+      FORECAST_BASE_URL:  http://forecast:8000
+      LEDGER_BASE_URL:    http://ledger:8000
+      ORCHESTRATOR_CRON:  ${ORCHESTRATOR_CRON:-0 6 * * *}
+      REPORTS_DIR:        /app/reports
+      LOG_LEVEL:          ${LOG_LEVEL:-INFO}
+    ports:
+      - "8003:8000"
+    volumes:
+      - ./reports:/app/reports
+    restart: unless-stopped
+
+volumes:
+  pgdata:

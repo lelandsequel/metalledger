@@ -1,0 +1,32 @@
+# MetalLedger v0 — Pinned requirements
+# Python 3.11+
+
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+pydantic-settings==2.2.1
+
+# ── HTTP client ───────────────────────────────────────────────────────────────
+httpx==0.27.0
+
+# ── Database ──────────────────────────────────────────────────────────────────
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+
+# ── Scheduling ────────────────────────────────────────────────────────────────
+APScheduler==3.10.4
+
+# ── Forecast / ML ────────────────────────────────────────────────────────────
+numpy==1.26.4
+scikit-learn==1.4.2
+statsmodels==0.14.2
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.2.0
+pytest-asyncio==0.23.6
+httpx==0.27.0      # already listed, TestClient needs it
+
+# ── Optional: uncomment for enhanced ARIMA and GBM ───────────────────────────
+# pmdarima==2.0.4
+# lightgbm==4.3.0
