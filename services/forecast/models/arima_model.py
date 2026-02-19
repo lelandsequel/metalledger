@@ -5,12 +5,21 @@ Uses statsmodels ARIMA(5,1,0) as default.
 If pmdarima is installed, uses auto_arima for automatic order selection.
 
 Confidence intervals from the model fit are used to derive P10/P50/P90.
+
+Data priority:
+  1. Real commodity futures via yfinance (commodity_feed.fetch_historical)
+  2. DB prices_canonical (passed in as prices arg)
+  3. Synthetic / naive fallback
 """
 
 from __future__ import annotations
 
 import math
+import os
+import sys
 from typing import List, Optional, Tuple
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "packages"))
 
 from common.logging_util import get_logger
 
@@ -102,20 +111,65 @@ def _naive_fallback(prices: List[float], horizon: int) -> dict:
     return {"p10": round(p10, 6), "p50": round(p50, 6), "p90": round(p90, 6)}
 
 
+def _fetch_real_prices(metal_slug: str) -> Optional[List[float]]:
+    """
+    Attempt to fetch real commodity prices from yfinance.
+
+    Returns list of scrap_price floats (ascending by date), or None on failure.
+    """
+    try:
+        # Import inside function to avoid hard dependency at module load
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from data.commodity_feed import fetch_historical
+
+        df = fetch_historical(metal_slug, days=730)
+        if df is None or df.empty:
+            return None
+
+        prices = df["scrap_price"].tolist()
+        log.info(
+            "ARIMA: loaded %d real price points for %s via yfinance",
+            len(prices), metal_slug,
+        )
+        return prices
+    except Exception as exc:
+        log.warning("ARIMA: yfinance fetch failed for %s: %s", metal_slug, exc)
+        return None
+
+
 def run(
     prices: List[float],
     horizons: List[int] = [1, 5, 20],
+    metal_slug: Optional[str] = None,
 ) -> dict:
     """
     Run ARIMA forecast on a sorted list of historical prices.
 
+    Data priority:
+      1. Real commodity futures via yfinance (if metal_slug provided)
+      2. DB prices_canonical (the prices arg passed in)
+      3. Synthetic / naive fallback
+
     Args:
-        prices:   Historical closing prices, ascending by date.
-        horizons: List of forecast horizons in trading days.
+        prices:     Historical closing prices from DB, ascending by date.
+        horizons:   List of forecast horizons in trading days.
+        metal_slug: Optional scrap metal slug (e.g. "CU_BARE") for yfinance lookup.
 
     Returns:
         Dict mapping horizon → {"p10": float, "p50": float, "p90": float}
     """
+    # 1. Try real data from yfinance
+    if metal_slug:
+        real_prices = _fetch_real_prices(metal_slug)
+        if real_prices and len(real_prices) >= MIN_OBSERVATIONS:
+            log.info(
+                "ARIMA: using real yfinance data for %s (%d points)",
+                metal_slug, len(real_prices),
+            )
+            prices = real_prices
+
+    # 2. Fall back to DB prices (already set as default), or synthetic fallback
     if len(prices) < MIN_OBSERVATIONS:
         log.warning(
             "ARIMA requires >= %d observations, got %d — using fallback",

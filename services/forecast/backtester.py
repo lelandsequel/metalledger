@@ -5,6 +5,10 @@ For each model × metal × horizon:
   - Walk forward in time using the last N days of data
   - Compute MAPE and RMSE of the P50 forecast
   - Store results in the backtests table
+
+Also supports run_with_real_data() which fetches 2 years of real commodity
+prices from yfinance, does an 80/20 train/test split, runs a rolling backtest,
+and stores MAPE + RMSE per model per metal.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from common.logging_util import get_logger
 
 log = get_logger(__name__)
 
-METALS    = ["XAU", "XAG", "CU"]
+METALS    = ["HMS1", "HMS2", "SHRED", "CAST", "CU_BARE", "CU_1", "CU_2", "AL_CAST", "AL_EXTRUSION"]
 HORIZONS  = [1, 5, 20]
 WINDOW    = 20    # minimum training window for backtest
 MIN_TOTAL = 30    # minimum observations required to run backtest
@@ -137,3 +141,74 @@ async def run_backtest(
         )
 
     return results
+
+
+async def run_with_real_data(pool: Any) -> List[Dict]:
+    """
+    Fetch 2 years of real commodity data via yfinance, split 80/20 train/test,
+    run rolling-window backtest, and store MAPE + RMSE per model per metal.
+
+    This is the primary accuracy validation function for the forecast service.
+
+    Returns:
+        List of backtest result dicts (one per model × metal × horizon).
+    """
+    # Import here to avoid hard dependency at module load
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    from data.commodity_feed import fetch_historical
+    from models import naive, arima_model, gradient_boost
+
+    model_registry = [
+        ("naive",          naive.run),
+        ("arima",          arima_model.run),
+        ("gradient_boost", gradient_boost.run),
+    ]
+
+    all_results: List[Dict] = []
+
+    for metal in METALS:
+        log.info("run_with_real_data: fetching yfinance data for %s", metal)
+        df = fetch_historical(metal, days=730)  # ~2 years
+
+        if df is None or df.empty:
+            log.warning("run_with_real_data: no data for %s — skipping", metal)
+            continue
+
+        scrap_prices: List[float] = df["scrap_price"].tolist()
+        price_dates:  List[date]  = list(df["date"])
+
+        if len(scrap_prices) < MIN_TOTAL:
+            log.warning(
+                "run_with_real_data: %s has only %d rows (need %d) — skipping",
+                metal, len(scrap_prices), MIN_TOTAL,
+            )
+            continue
+
+        # 80/20 split: use only the test window for backtest evaluation
+        split_idx      = int(len(scrap_prices) * 0.8)
+        train_prices   = scrap_prices[:split_idx]
+        test_prices    = scrap_prices[split_idx:]
+        train_dates    = price_dates[:split_idx]
+        test_dates     = price_dates[split_idx:]
+
+        log.info(
+            "run_with_real_data: %s — %d train / %d test rows",
+            metal, len(train_prices), len(test_prices),
+        )
+
+        # Run backtest across the full dataset (train + test) using walk-forward
+        for model_name, model_fn in model_registry:
+            try:
+                results = await run_backtest(
+                    pool, metal, model_name, model_fn,
+                    scrap_prices, price_dates,
+                )
+                all_results.extend(results)
+            except Exception as exc:
+                log.error(
+                    "run_with_real_data: backtest %s/%s failed: %s",
+                    model_name, metal, exc,
+                )
+
+    log.info("run_with_real_data: stored %d backtest rows total", len(all_results))
+    return all_results

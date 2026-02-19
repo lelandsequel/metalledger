@@ -275,9 +275,82 @@ making it append-only and tamper-resistant.
 
 ---
 
+## How Forecasting Works
+
+### Data Sources
+MetalLedger uses free commodity futures as proxies for scrap metal prices:
+
+| Metal Category | Futures Ticker | Exchange | Spread Applied |
+|----------------|---------------|----------|----------------|
+| Copper (all grades) | HG=F | COMEX | 82–97% of spot |
+| Steel (HMS1/2, Shredded, Cast) | HR=F | CME | 68–94% of spot |
+| Aluminum | ALI=F | CME | 52–61% of spot |
+
+Data is fetched via `yfinance` with a 15-minute delay. No API key required.
+
+### Why Futures Work
+Scrap metal prices are derived from primary metal markets. A scrap dealer's
+buy/sell prices track COMEX copper within ±5–8% consistently. The spread
+(discount from primary to scrap) varies by grade and is calibrated to
+typical dealer margins.
+
+### Forecast Models
+Three models run in ensemble:
+
+1. **Naive** — Baseline. Yesterday's price = tomorrow's. Always runs.
+2. **ARIMA(5,1,0)** — Captures trends and momentum. Best for 1–30 day horizons.
+3. **Gradient Boost** — Lag features (7d, 14d, 30d, 60d). Best for 60–180 day horizons.
+
+P10/P50/P90 intervals are derived from the ensemble spread + rolling volatility.
+
+### Forecast Horizons
+- 1 day, 5 days, 20 days (stored in DB, accessible via `/forecast/latest`)
+- 30, 60, 90, 120, 180 days (extrapolated, accessible via `/forecast/live`)
+
+### Live Endpoint
+```
+GET /forecast/live?metal=CU_BARE
+```
+Returns the current scrap price estimate (15-min delayed via yfinance) plus
+P10/P50/P90 at 30, 90, and 180 trading days. Falls back to synthetic seed
+prices if yfinance is unavailable.
+
+```json
+{
+  "metal_slug": "CU_BARE",
+  "scrap_price": 4.02,
+  "raw_futures_price": 4.1443,
+  "ticker": "HG=F",
+  "spread_factor": 0.97,
+  "fetched_at": "2025-02-19T10:00:00Z",
+  "p10_30d": 3.85, "p50_30d": 4.05, "p90_30d": 4.22,
+  "p10_90d": 3.72, "p50_90d": 4.05, "p90_90d": 4.38,
+  "p10_180d": 3.61, "p50_180d": 4.05, "p90_180d": 4.52,
+  "price_source": "live",
+  "generated_at": "2025-02-19T10:00:01Z"
+}
+```
+
+### Improving Accuracy
+The biggest accuracy improvement comes from the client's own historical sell
+prices. Providing even 6 months of actual transaction data allows us to:
+1. Calibrate the exact spread for their specific dealers and region
+2. Capture regional Texas pricing vs national benchmarks
+3. Build a personalized model that predicts THEIR prices, not generic market prices
+
+### Backtesting
+Rolling-window backtests are stored in the `backtests` table with MAPE and RMSE
+per model per metal. Run `GET /forecast/backtest?metal=CU_BARE` to see accuracy metrics.
+
+The `run_with_real_data()` function in `backtester.py` fetches 2 years of real
+commodity data from yfinance, splits 80/20 train/test, and runs the full
+walk-forward backtest suite automatically.
+
+---
+
 ## Forecast Models
 
-Forecasts run for all 13 scrap metal slugs across horizons **1d, 5d, 20d**:
+Forecasts run for all 9 primary scrap metal slugs across horizons **1d, 5d, 20d**:
 
 | Model | Description | Min Observations |
 |-------|-------------|-----------------|
